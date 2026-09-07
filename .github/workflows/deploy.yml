@@ -1,4 +1,4 @@
-name: Deploy to EC2 via SSM
+name: Deploy to EC2 with Docker Compose
 
 on:
   push:
@@ -34,25 +34,35 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Construcción desde la carpeta específica del Dockerfile
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./Data/image-server
+          # Detecta si el directorio es ./Data o ./data
+          PATH_IMAGE=$(test -d ./Data/image-server && echo "./Data/image-server" || echo "./data/image-server")
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest $PATH_IMAGE
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Desplegar en EC2 Privada mediante AWS SSM
+      - name: Transferir docker-compose.yml y desplegar vía AWS SSM
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          # Ejecución remota sin IP pública pasando las variables de GitHub Secrets
+          # Localizar el archivo docker-compose.yml
+          COMPOSE_FILE=$(test -f ./Data/docker-compose.yml && echo "./Data/docker-compose.yml" || echo "./data/docker-compose.yml")
+          COMPOSE_BASE64=$(base64 -w 0 $COMPOSE_FILE)
+
+          # Enviar comandos de despliegue remotos usando SSM
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=[
               "aws ecr get-login-password --region '${{ env.AWS_REGION }}' | docker login --username AWS --password-stdin '${{ env.ECR_REGISTRY }}'",
-              "docker pull '${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}':latest",
-              "docker stop mi-app || true",
-              "docker rm mi-app || true",
-              "docker run -d --name mi-app -p 80:80 -e DB_HOST=\"'${{ secrets.DB_HOST }}'\" -e DB_PASS=\"'${{ secrets.DB_PASS }}'\" '${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}':latest"
+              "mkdir -p /home/ec2-user/app",
+              "echo '\'${COMPOSE_BASE64}'\' | base64 -d > /home/ec2-user/app/docker-compose.yml",
+              "cd /home/ec2-user/app",
+              "export ECR_IMAGE='${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}':latest",
+              "export DB_HOST=\"'${{ secrets.DB_HOST }}'\"",
+              "export DB_PASS=\"'${{ secrets.DB_PASS }}'\"",
+              "docker compose pull",
+              "docker compose down || true",
+              "docker compose up -d"
             ]' \
             --region ${{ env.AWS_REGION }} \
             --query "Command.CommandId" \
@@ -60,7 +70,7 @@ jobs:
 
           echo "Comando SSM enviado con ID: $COMMAND_ID"
 
-          # Espera activa para confirmar el éxito del despliegue
+          # Esperar la confirmación de ejecución
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
             --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
