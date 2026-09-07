@@ -17,7 +17,7 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v4
 
-      - name: Configurar credenciales de AWS
+      - name: Configurar credenciales de AWS Academy
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -34,15 +34,16 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          # Construcción desde la carpeta específica del Dockerfile
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./Data/image-server
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Ejecutar despliegue en EC2 pasando secrets directamente
+      - name: Desplegar en EC2 Privada mediante AWS SSM
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          # Enviar comando SSM inyectando los secrets directo en 'docker run -e'
+          # Ejecución remota sin IP pública pasando las variables de GitHub Secrets
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
@@ -59,7 +60,7 @@ jobs:
 
           echo "Comando SSM enviado con ID: $COMMAND_ID"
 
-          # Esperar a que el comando termine en la EC2
+          # Espera activa para confirmar el éxito del despliegue
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
             --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
